@@ -3,13 +3,16 @@ import numpy as np
 import GAE_Calculator
 from Device import DEVICE
 from Train_Data import TrainData
-from Model import ActorCriticNetwork
+from Model import ActorNetwork
+from Model import CriticNetwork
+from torch.distributions.normal import Normal
 
 
 class DataSampler:
 
     def sample_data(self,
-                    model: ActorCriticNetwork,
+                    actor_model: ActorNetwork,
+                    critic_model: CriticNetwork,
                     environment,
                     observation: np.ndarray,
                     sample_steps: int = 2048):
@@ -19,7 +22,8 @@ class DataSampler:
             train_data.append(list())
         for _ in range(sample_steps):
             observation: torch.tensor = torch.tensor(observation, dtype=torch.float32, device=DEVICE).unsqueeze(0)
-            distribution, value = model(observation)
+            distribution: Normal = actor_model(observation)
+            value: torch.tensor = critic_model(observation)
             action: torch.tensor = distribution.sample()
             next_observation, reward, done, _ = environment.step(action.cpu().numpy()[0])
             action_log_prob: torch.tensor = distribution.log_prob(action)
@@ -41,7 +45,7 @@ class DataSampler:
                 observation: np.ndarray = next_observation
 
         next_observation: torch.tensor = torch.tensor(next_observation, dtype=torch.float32, device=DEVICE).unsqueeze(0)
-        _, next_value = model(next_observation)
+        next_value: torch.tensor = critic_model(next_observation)
         train_data[TrainData.RETURNS.value]: list = GAE_Calculator.calculate_gaes(next_value, train_data[TrainData.REWARDS.value],
                                                              train_data[TrainData.VALUES.value],
                                                              train_data[TrainData.MASKS.value])

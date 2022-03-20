@@ -1,23 +1,26 @@
 import gym
 import torch
 import numpy as np
-from Model import ActorCriticNetwork
+from Model import ActorNetwork
+from Model import CriticNetwork
 from Device import DEVICE
 from PPO_Trainer import PPOTrainer
 from Data_Sampler import DataSampler
 from Train_Data import TrainData
 from datetime import date
 from datetime import datetime
+from torch.distributions.normal import Normal
 
 ENV_ID: str = 'Ant-v2'
-TARGET_REWARD: int = 2500
+TARGET_REWARD: float = 2500.0
 NUMBER_OF_TESTS: int = 10
 HIDDEN_SIZE: int = 64
 SAMPLE_STEPS: int = 2048
 TEST_EPISODE_FREQUENCY: int = 20
 MINI_BATCH_SIZE: int = 64
 RESUME_MODEL: bool = False
-MODEL_FILENAME: str = ''
+ACTOR_MODEL_FILENAME: str = ''
+CRITIC_MODEL_FILENAME: str = ''
 LOG_FILE_CREATION_DATE: str = f'{date.today().strftime("%b-%d-%Y")} {datetime.now().strftime("%H:%M:%S")}'
 NAME_OF_RUN: str = 'Basic training'
 LOG_FILE_NAME: str = f'{NAME_OF_RUN} {LOG_FILE_CREATION_DATE}'
@@ -30,16 +33,21 @@ if __name__ == '__main__':
     train_env = gym.make(ENV_ID)
     # Initialize test environment
     test_env = gym.make(ENV_ID)
-    # Initialize model
-    model: ActorCriticNetwork = ActorCriticNetwork(train_env.observation_space.shape[0], train_env.action_space.shape[0], HIDDEN_SIZE)
-    model = model.to(DEVICE)
+    # Initialize actor model
+    actor_model: ActorNetwork = ActorNetwork(train_env.observation_space.shape[0], train_env.action_space.shape[0], HIDDEN_SIZE)
+    actor_model = actor_model.to(DEVICE)
+    # Initialize critic model
+    critic_model: CriticNetwork = CriticNetwork(train_env.observation_space.shape[0], HIDDEN_SIZE)
+    critic_model = critic_model.to(DEVICE)
     # Initialize data sampler
     data_sampler: DataSampler = DataSampler()
     # Initialize PPO Trainer
     ppo: PPOTrainer = PPOTrainer(
-        model,
-        policy_lr=1e-4,
-        max_policy_train_iters=10,
+        actor_model,
+        critic_model,
+        max_train_iters=10,
+        actor_lr=1e-4,
+        critic_lr=1e-4,
         mini_batch_size=MINI_BATCH_SIZE
     )
     train_observation: np.ndarray = train_env.reset()
@@ -47,7 +55,8 @@ if __name__ == '__main__':
     episode: int = 0
     # Resume model
     if RESUME_MODEL:
-        model.load_state_dict(torch.load('./checkpoints/' + MODEL_FILENAME))
+        actor_model.load_state_dict(torch.load('./checkpoints/' + ACTOR_MODEL_FILENAME))
+        critic_model.load_state_dict(torch.load('./checkpoints/' + CRITIC_MODEL_FILENAME))
         # Reward shown in the model name
         best_reward = 1234.1234
         # Episode shown in the model name
@@ -59,7 +68,7 @@ if __name__ == '__main__':
     # Training loop
     while not early_stop:
         # Perform rollout
-        train_data, train_observation = data_sampler.sample_data(model, train_env, train_observation, sample_steps=SAMPLE_STEPS)
+        train_data, train_observation = data_sampler.sample_data(actor_model, critic_model, train_env, train_observation, sample_steps=SAMPLE_STEPS)
         # Retain all values from the list and put them concatenated in a torch tensor
         train_data[TrainData.OBSERVATIONS.value] = torch.cat(train_data[TrainData.OBSERVATIONS.value]).unsqueeze(1)
         train_data[TrainData.ACTIONS.value] = torch.cat(train_data[TrainData.ACTIONS.value]).unsqueeze(1)
@@ -81,14 +90,14 @@ if __name__ == '__main__':
                         train_data[TrainData.ADVANTAGES.value])
         episode = episode + 1
         if (episode + 1) % TEST_EPISODE_FREQUENCY == 0:
-            total_rewards = np.empty(NUMBER_OF_TESTS)
+            total_rewards: np.ndarray = np.empty(NUMBER_OF_TESTS)
             for test_idx in range(NUMBER_OF_TESTS):
                 test_observation: np.ndarray = test_env.reset()
                 done: bool = False
                 total_reward: float = 0.0
                 while not done:
                     test_observation: torch.tensor = torch.tensor(test_observation, dtype=torch.float32, device=DEVICE).unsqueeze(0)
-                    distribution, _ = model(test_observation)
+                    distribution: Normal = actor_model(test_observation)
                     action: np.ndarray = distribution.mean.detach().cpu().numpy()[0]
                     next_observation, reward, done, _ = test_env.step(action)
                     test_observation: np.ndarray = next_observation
@@ -101,8 +110,11 @@ if __name__ == '__main__':
                 file.write(f'{episode + 1},{np.mean(total_rewards)}\n')
             if best_reward is None or np.mean(total_rewards) > best_reward:
                 best_reward = np.mean(total_rewards)
-                filename: str = '{}-model {} reward={} episodes={}.pth'.format(ENV_ID,NAME_OF_RUN,best_reward,episode + 1)
+                actor_filename: str = '{}-Actormodel {} reward={} episodes={}.pth'.format(ENV_ID, NAME_OF_RUN, best_reward, episode + 1)
+                critic_filename: str = '{}-Criticmodel {} reward={} episodes={}.pth'.format(ENV_ID, NAME_OF_RUN, best_reward, episode + 1)
                 checkpoint_path: str = './checkpoints/'
-                torch.save(model.state_dict(), checkpoint_path+filename)
-                print('Saved checkpoint: {}'.format(filename))
+                torch.save(actor_model.state_dict(), checkpoint_path+actor_filename)
+                torch.save(critic_model.state_dict(), checkpoint_path + critic_filename)
+                print(f'Saved checkpoint: {actor_filename} and\n'
+                      f'{critic_filename}')
             if np.mean(total_rewards) > TARGET_REWARD: early_stop = True
